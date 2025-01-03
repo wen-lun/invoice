@@ -1,3 +1,5 @@
+import type { IOcrTicketData } from '@/api/ocr'
+
 export interface IData {
   /** 项目 */
   type?: string
@@ -11,8 +13,9 @@ export interface IData {
   user?: string
   /** 备注 */
   remarks?: string
-  /**发票 */
+  /** 发票 */
   invoice?: {
+    ocrTicket?: IOcrTicketData
     base64: string
     width: number
     height: number

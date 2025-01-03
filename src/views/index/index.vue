@@ -1,11 +1,11 @@
 <template>
   <div class="index">
     <input
-      ref="refInputFile"
+      ref="refImportInputFile"
       type="file"
       style="display: none"
-      accept="application/pdf,image/*"
-      @change="onFileChange"
+      accept="application/json"
+      @change="onImportFileChange"
     />
     <div class="flex">
       <ElFormItem label="出差人">
@@ -44,13 +44,34 @@
         />
       </ElFormItem>
       <div>
-        <ElButton type="success" @click="onGenWordClick">导出</ElButton>
-        <ElPopconfirm title="确定要清空内容吗？" @confirm="store.$reset()">
-          <template #reference>
-            <ElButton type="danger">清空</ElButton>
-          </template>
-        </ElPopconfirm>
+        <ElSpace :size="5">
+          <ElDropdown @command="onCommand">
+            <ElButton type="primary">
+              操作
+              <ElIcon class="el-icon--right">
+                <arrow-down />
+              </ElIcon>
+            </ElButton>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item :icon="Download" command="importJson">导入 json</el-dropdown-item>
+                <el-dropdown-item divided :icon="Upload" command="exportWord"
+                  >导出 word</el-dropdown-item
+                >
+                <el-dropdown-item :icon="Upload" command="exportJson">导出 json</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </ElDropdown>
+          <ElPopconfirm title="确定要清空内容吗？" @confirm="store.$reset()">
+            <template #reference>
+              <ElButton type="danger">清空</ElButton>
+            </template>
+          </ElPopconfirm>
+        </ElSpace>
       </div>
+    </div>
+    <div class="tips">
+      说明：选择发票文件后，会自动识别发票金额并回填，同时文件名也会回填到备注，支持选择pdf文件或图片。
     </div>
     <table class="table">
       <colgroup>
@@ -105,12 +126,37 @@
             </ElSelect>
           </td>
           <td>
-            <ElLink v-if="!item.invoice" type="primary" @click="onSelectFileClick(item)"
-              >选择文件</ElLink
+            <input
+              ref="refInputFiles"
+              type="file"
+              style="display: none"
+              accept="application/pdf,image/*"
+              @change="onFileChange($event, index)"
+            />
+            <ElButton
+              v-if="!item.invoice"
+              type="primary"
+              text
+              :loading="loadings[index]"
+              @click="onSelectFileClick(index)"
             >
-            <div v-else class="selected-file">
-              <el-image :src="item.invoice.base64" :preview-src-list="[item.invoice.base64]" />
-              <ElLink type="primary" @click="onSelectFileClick(item)">重选</ElLink>
+              选择文件
+            </ElButton>
+            <div v-else>
+              <ElPopover trigger="click" :width="600" placement="left">
+                <InvoiceDetail :invoice="item.invoice" />
+                <template #reference>
+                  <ElButton type="primary" text>查看</ElButton>
+                </template>
+              </ElPopover>
+              <ElButton
+                type="primary"
+                text
+                :loading="loadings[index]"
+                @click="onSelectFileClick(index)"
+              >
+                重选
+              </ElButton>
             </div>
           </td>
           <td>
@@ -196,8 +242,8 @@
 </template>
 
 <script lang="ts" setup>
-import { ref, computed, h, watch } from 'vue'
-import type { IData } from './typing'
+import { computed, watch, useTemplateRef, ref, toRaw } from 'vue'
+import type { IData, IForm } from './typing'
 import {
   calcSubsidyAmount,
   calcTotalAmount,
@@ -206,20 +252,22 @@ import {
   parseFile,
 } from './utils'
 import { invoiceTypes } from '@/constant/common'
-import { dayjs, ElMessage } from 'element-plus'
+import { dayjs, ElMessage, ElMessageBox } from 'element-plus'
 import { useStore } from './store'
 import { storeToRefs } from 'pinia'
+import { api } from '@/api'
+import InvoiceDetail from './invoice-detail.vue'
+import { EOcrTicketIndex } from '@/api/ocr'
+import { ArrowDown, Download, Upload } from '@element-plus/icons-vue'
+import FileSaver from 'file-saver'
 
 const store = useStore()
 
 const COL = 8
 const { form } = storeToRefs(store)
-// 项目
-// const data = ref<IData[]>([{}])
-const current = ref<IData>()
-// 补贴
-// const subsidy = ref<IData[]>([{ type: '出差补贴' }])
-const refInputFile = ref<HTMLInputElement>()
+const loadings = ref<Record<number, boolean>>({})
+const refImportInputFile = ref<HTMLInputElement>()
+const refInputFiles = useTemplateRef<HTMLInputElement[]>('refInputFiles')
 
 const users = computed(() => {
   const set = new Set<string>()
@@ -249,26 +297,58 @@ const sortData = computed(() => {
 // 计算总金额
 const totalAmount = computed(() => calcTotalAmount(form.value.data, form.value.subsidy))
 
-function onSelectFileClick(item: IData) {
-  current.value = item
-  refInputFile.value?.click()
+function onSelectFileClick(index: number) {
+  refInputFiles.value?.[index].click()
 }
 
-async function onFileChange(e: Event) {
+async function onImportFileChange(e: Event) {
   const target = e.target as HTMLInputElement
-  if (!target.files?.length || !current.value) return
+  if (!target.files?.length) return
+  const file = target.files[0]
+  if (file.type !== 'application/json' || !file.name.endsWith('.json')) {
+    return ElMessage.error('请选择json文件')
+  }
+  const reader = new FileReader()
+  reader.onload = (e) => {
+    try {
+      const jsonData: IForm = JSON.parse(reader.result as string)
+      if (!jsonData.data?.length || !jsonData.subsidy?.length) throw new Error('数据格式不正确')
+      form.value = jsonData
+    } catch (e: any) {
+      ElMessage.error(e.message)
+    }
+  }
+  reader.readAsText(file)
+  target.value = null!
+}
+
+async function onFileChange(e: Event, index: number) {
+  const target = e.target as HTMLInputElement
+  const item = form.value.data[index]
+  if (!target.files?.length || !item) return
   const file = target.files[0]
 
   if (file.type === 'application/pdf' || file.type.startsWith('image/')) {
-    const canvas = await parseFile(file)
-    if (canvas) {
-      current.value.invoice = {
-        base64: canvas.toDataURL('jpeg'),
-        width: canvas.width,
-        height: canvas.height,
+    try {
+      loadings.value[index] = true
+      const ocrTicket = await api.ocr.ticket(file)
+      const canvas = await parseFile(file)
+      if (canvas) {
+        item.invoice = {
+          ocrTicket,
+          base64: canvas.toDataURL('image/jpeg', 0.6),
+          width: canvas.width,
+          height: canvas.height,
+        }
       }
+      const amount = ocrTicket?.realResult.find((item) => {
+        return item.index === EOcrTicketIndex.TOTAL_LOWER
+      })
+      item.amount = amount?.value ? parseFloat(amount.value.substring(1)) : undefined
+      item.remarks = file.name.substring(0, file.name.lastIndexOf('.'))
+    } finally {
+      loadings.value[index] = false
     }
-    current.value.remarks = file.name.substring(0, file.name.lastIndexOf('.'))
   } else {
     ElMessage.error('请选择图片或pdf文件')
   }
@@ -280,10 +360,37 @@ function onSubSidyDateChange(item: IData) {
   item.remarks = parseSubsidyRemarks(item)
 }
 
-function onGenWordClick() {
-  if (!form.value.user) return ElMessage.error('请输入出差人')
-  if (!form.value.dateRange) return ElMessage.error('请选择出差日期')
-  genWord(form.value, sortData.value, form.value.subsidy)
+async function onCommand(command: 'importJson' | 'exportJson' | 'exportWord') {
+  if (command === 'exportWord') {
+    if (!form.value.user) return ElMessage.error('请输入出差人')
+    if (!form.value.dateRange) return ElMessage.error('请选择出差日期')
+    genWord(form.value, sortData.value, form.value.subsidy)
+    return
+  }
+
+  if (command === 'exportJson' && form.value) {
+    const res = await ElMessageBox.prompt('请输入文件名', {
+      inputValue: form.value.fileName,
+      inputValidator: (value) => {
+        if (!value?.trim().length) return '请输入文件名'
+        return true
+      },
+    })
+    if (res.action === 'confirm') {
+      const content = JSON.stringify(toRaw(form.value), null, 4)
+      var blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+      FileSaver.saveAs(blob, res.value + '.json')
+    }
+    return
+  }
+
+  if (command === 'importJson') {
+    const res = await ElMessageBox.confirm('确认导入数据，并覆盖当前内容吗？')
+    if (res === 'confirm') {
+      refImportInputFile.value?.click()
+    }
+    return
+  }
 }
 
 watch([() => form.value.user, () => form.value.dateRange, () => form.value.location], () => {
@@ -298,6 +405,12 @@ watch([() => form.value.user, () => form.value.dateRange, () => form.value.locat
 .index {
   padding: 10px;
 
+  .el-button {
+    + .el-button {
+      margin-left: 5px;
+    }
+  }
+
   .flex {
     display: flex;
     flex-wrap: wrap;
@@ -309,37 +422,31 @@ watch([() => form.value.user, () => form.value.dateRange, () => form.value.locat
     .el-form-item {
       margin-bottom: 0;
     }
+  }
 
-    .el-button {
-      + .el-button {
-        margin-left: 5px;
-      }
-    }
+  .tips {
+    color: #e6a23c;
+    padding: 10px 0;
+    font-size: 14px;
   }
 
   .table {
     width: 100%;
     border-collapse: collapse;
     table-layout: fixed;
-    margin-top: 20px;
     :deep(.el-date-editor) {
       width: auto;
     }
 
-    .el-input-number {
-      width: 100%;
+    .el-button {
+      &.is-text {
+        padding: 0;
+        height: auto;
+      }
     }
 
-    .selected-file {
-      display: flex;
-      align-items: flex-end;
-      gap: 5px;
-
-      .el-image {
-        $size: 40px;
-        width: $size;
-        height: $size;
-      }
+    .el-input-number {
+      width: 100%;
     }
 
     td {

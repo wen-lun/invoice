@@ -11,9 +11,9 @@ import {
   TableRow,
   TextRun,
   WidthType,
-  XmlComponent,
   type ITableCellOptions,
 } from 'docx'
+import FileSaver from 'file-saver'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'
 
@@ -41,14 +41,26 @@ export function calcSubsidyAmount(item: IData) {
   return calcTravelDays(item) * DAILY_SUBSIDY_AMOUNT
 }
 
-// 处理图片文件
-async function image2canvas(file: File) {
+/**处理图片，并控制图片最长边的宽度 */
+async function image2canvas(file: File, maxSize = 1920) {
   return new Promise<HTMLCanvasElement>((resolve, reject) => {
     const img = new Image()
     img.onload = () => {
+      let thumbW = img.width
+      let thumbH = img.height
+      if (img.width >= img.height && img.width > maxSize) {
+        const scale = img.width / img.height
+        thumbW = maxSize
+        thumbH = thumbW / scale
+      } else if (img.height >= img.width && img.height > maxSize) {
+        const scale = img.height / img.width
+        thumbH = maxSize
+        thumbW = thumbH / scale
+      }
+
       const canvas = document.createElement('canvas')
-      canvas.width = img.width
-      canvas.height = img.height
+      canvas.width = thumbW
+      canvas.height = thumbH
 
       const ctx = canvas.getContext('2d', {
         alpha: false,
@@ -60,7 +72,7 @@ async function image2canvas(file: File) {
         return
       }
 
-      ctx.drawImage(img, 0, 0)
+      ctx.drawImage(img, 0, 0, thumbW, thumbH)
       URL.revokeObjectURL(img.src) // 释放内存
       resolve(canvas)
     }
@@ -259,12 +271,6 @@ export function genWord(form: IForm, data: IData[], subsidy: IData[]) {
 
   // 导出文档
   Packer.toBlob(doc).then((blob) => {
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${form.fileName}.docx`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
+    FileSaver.saveAs(blob, `${form.fileName}.docx`)
   })
 }
